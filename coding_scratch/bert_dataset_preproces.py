@@ -84,8 +84,15 @@ class BertDataset(Dataset):
         return torch.tensor(self.inputs[index]), torch.tensor(self.targets[index])
 
 
-with open('data.txt') as f:
+
+if os.path.exists("/kaggle/input/tr-news/data.txt"):
+    data_path = "/kaggle/input/tr-news/data.txt"
+else:
+    data_path = "data.txt"  
+
+with open(data_path, "r", encoding="utf-8") as f:
     data = f.readlines()
+
 
 dataset = BertDataset(data)
 
