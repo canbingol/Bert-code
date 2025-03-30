@@ -52,6 +52,9 @@ tokens_seen, global_step = 0, -1
 def bert_train(optimizer, eval_freq: int = 2, epochs: int = 10):
     global tokens_seen, track_tokens_seen, global_step, train_losses
     print(f'dataloader size: {len(dataloader)}')
+    #Checkpoint folder
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
     for epoch in range(epochs):
         model.train()
         for input_batch, target_batch in dataloader:
@@ -73,7 +76,17 @@ def bert_train(optimizer, eval_freq: int = 2, epochs: int = 10):
                 track_tokens_seen.append(tokens_seen)
 
                 print(f"Epoch [{epoch+1}/{epochs}], Step [{global_step}], Training Loss: {loss:.4f}")
-
+        checkpoint_path = os.path.join(checkpoint_dir, f"bert_epoch_{epoch+1}.pt")
+        torch.save({
+            'epoch': epoch+1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_losses': train_losses,
+            'tokens_seen': tokens_seen,
+            'global_step': global_step
+        }, checkpoint_path)
+        print(f"Checkpoint saved: {checkpoint_path}")
+        
 optimizer = torch.optim.AdamW(
     model.parameters(),
     lr=0.0004, weight_decay=0.1
@@ -81,6 +94,7 @@ optimizer = torch.optim.AdamW(
 epochs = 4
 eval_freq = 20
 bert_train(optimizer, eval_freq, epochs=epochs)
+
 
 
 def plot_losses(epochs_seen, tokens_seen, train_losses, file_name=None):
