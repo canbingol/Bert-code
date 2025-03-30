@@ -23,7 +23,7 @@ cls_idx = 101
 sep_idx  =102
 mask_idx = 103
 
-num_workers = min(4, multiprocessing.cpu_count())
+num_workers = multiprocessing.cpu_count()
 print(f'num worker : {num_workers}')
 
 class BertDataset(Dataset):
