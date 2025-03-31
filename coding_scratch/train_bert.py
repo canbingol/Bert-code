@@ -1,118 +1,266 @@
 import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+import os
+import time
+import datetime
+import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+
 from bert_model import BERT, bertconfig
-from bert_dataset_preproces import dataloader
+from bert_dataset_preproces import train_dataloader, val_dataloader
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-bertconfig['device'] = device
-model = BERT(bertconfig)
-model = model.to(device)
+# Cihaz kontrolü
+device = torch.device(bertconfig['device'] if torch.cuda.is_available() else 'cpu')
+print(f"Kullanılan cihaz: {device}")
 
-def calc_loss_batch(input_batch,target_batch):
-    input_batch = input_batch.to(device)
-    target_batch = target_batch.to(device)
-    logits = model(input_batch)
-    loss = torch.nn.functional.cross_entropy(
-        logits.flatten(0,1), target_batch.flatten()
-    )
-    return loss
+# Model oluşturma
+model = BERT(bertconfig).to(device)
+print(f"Model yüklendi ve {device} cihazına taşındı")
 
-def calc_loss_loader(num_batches=None):
-    total_loss = 0
-    if len(dataloader) == 0:
-        return float('nan')
-    elif num_batches is  None:
-        num_batches = len(dataloader)
-    else:
-        num_batches = min(num_batches, len(dataloader))
+# Toplam parametre sayısını hesaplama
+total_params = sum(p.numel() for p in model.parameters())
+print(f"Toplam parametre sayısı: {total_params:,}")
 
-    for i ,(input_batch, target_batch) in enumerate(dataloader):
-        if i < num_batches:
-            loss = calc_loss_batch(
-                input_batch, target_batch
-            )
-            total_loss += loss.item()
+# Hiperparametreler
+EPOCHS = 5
+LEARNING_RATE = 3e-5
+WEIGHT_DECAY = 0.01
+WARMUP_STEPS = 100
 
-        else:
-            break
-    return total_loss / num_batches
+# Optimizer ve loss fonksiyonu
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+criterion = nn.CrossEntropyLoss(ignore_index=0)  # pad_idx'i yoksay (0 olarak varsayıyorum)
 
+# Learning rate scheduler
+def get_lr_scheduler(optimizer, warmup_steps, total_steps):
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        return max(0.0, float(total_steps - current_step) / float(max(1, total_steps - warmup_steps)))
+    
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-with torch.no_grad():
-    train_loss = calc_loss_loader()
-    val_loss = calc_loss_loader()
+# Toplam adım sayısını hesapla
+total_steps = len(train_dataloader) * EPOCHS
 
-print("Training loss:", train_loss)
-print("Validation loss:", val_loss)
+# Scheduler oluştur
+scheduler = get_lr_scheduler(optimizer, WARMUP_STEPS, total_steps)
 
-train_losses, track_tokens_seen = [], []
-tokens_seen, global_step = 0, -1
+# Model kaydetme yolu
+MODEL_SAVE_PATH = 'bert_checkpoints'
+os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
 
-def bert_train(optimizer, eval_freq: int = 2, epochs: int = 10):
-    global tokens_seen, track_tokens_seen, global_step, train_losses
-    print(f'dataloader size: {len(dataloader)}')
-    #Checkpoint folder
-    os.makedirs(checkpoint_dir, exist_ok=True)
+# Eğitim ve değerlendirme sırasında metrikleri takip etmek için
+train_losses = []
+val_losses = []
+train_perplexities = []
+val_perplexities = []
 
-    for epoch in range(epochs):
-        model.train()
-        for input_batch, target_batch in dataloader:
-            optimizer.zero_grad()
-            loss = calc_loss_batch(input_batch, target_batch)
+# Eğitim fonksiyonu
+def train(model, dataloader, optimizer, criterion, scheduler, device):
+    model.train()
+    epoch_loss = 0
+    correct_preds = 0
+    total_preds = 0
+    
+    progress_bar = tqdm(dataloader, desc="Training")
+    
+    for batch_idx, (inputs, targets) in enumerate(progress_bar):
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+        
+        # Forward pass
+        outputs = model(inputs)
+        
+        # Çıktı boyutunu yeniden düzenle: [batch_size, seq_len, vocab_size] -> [batch_size*seq_len, vocab_size]
+        outputs = outputs.view(-1, outputs.size(-1))
+        targets = targets.view(-1)
+        
+        # Loss hesapla
+        loss = criterion(outputs, targets)
+        
+        # Backward pass ve optimization
+        optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping (aşırı gradyanları sınırla)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        optimizer.step()
+        scheduler.step()
+        
+        # Metrikleri güncelle
+        epoch_loss += loss.item()
+        
+        # Perplexity için doğru tahminleri hesapla (sadece pad olmayan tokenlarda)
+        mask = targets != 0  # pad idx'i hariç tut
+        _, predicted = torch.max(outputs[mask], 1)
+        total_preds += mask.sum().item()
+        correct_preds += (predicted == targets[mask]).sum().item()
+        
+        # Progress bar'ı güncelle
+        progress_bar.set_postfix({
+            'loss': f'{epoch_loss/(batch_idx+1):.4f}',
+            'lr': f'{scheduler.get_last_lr()[0]:.6f}'
+        })
+    
+    avg_loss = epoch_loss / len(dataloader)
+    accuracy = correct_preds / total_preds if total_preds > 0 else 0
+    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    
+    return avg_loss, accuracy, perplexity
 
-            loss.backward()
-            optimizer.step()
+# Değerlendirme fonksiyonu
+def evaluate(model, dataloader, criterion, device):
+    model.eval()
+    epoch_loss = 0
+    correct_preds = 0
+    total_preds = 0
+    
+    with torch.no_grad():
+        progress_bar = tqdm(dataloader, desc="Evaluating")
+        
+        for batch_idx, (inputs, targets) in enumerate(progress_bar):
+            inputs = inputs.to(device)
+            targets = targets.to(device)
             
-            tokens_seen += input_batch.numel()  
-            global_step += 1
+            # Forward pass
+            outputs = model(inputs)
+            
+            # Çıktı boyutunu yeniden düzenle
+            outputs = outputs.view(-1, outputs.size(-1))
+            targets = targets.view(-1)
+            
+            # Loss hesapla
+            loss = criterion(outputs, targets)
+            
+            # Metrikleri güncelle
+            epoch_loss += loss.item()
+            
+            # Perplexity için doğru tahminleri hesapla (sadece pad olmayan tokenlarda)
+            mask = targets != 0  # pad idx'i hariç tut
+            _, predicted = torch.max(outputs[mask], 1)
+            total_preds += mask.sum().item()
+            correct_preds += (predicted == targets[mask]).sum().item()
+            
+            # Progress bar'ı güncelle
+            progress_bar.set_postfix({'loss': f'{epoch_loss/(batch_idx+1):.4f}'})
+    
+    avg_loss = epoch_loss / len(dataloader)
+    accuracy = correct_preds / total_preds if total_preds > 0 else 0
+    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    
+    return avg_loss, accuracy, perplexity
 
-            if global_step % eval_freq == 0:
-                model.eval()
-                with torch.no_grad():
-                    loss = calc_loss_loader()  
-                model.train()
-                train_losses.append(loss)  
-                track_tokens_seen.append(tokens_seen)
+# Eğitim döngüsü
+best_val_loss = float('inf')
 
-                print(f"Epoch [{epoch+1}/{epochs}], Step [{global_step}], Training Loss: {loss:.4f}")
-
+for epoch in range(EPOCHS):
+    start_time = time.time()
+    
+    # Eğitim
+    train_loss, train_acc, train_ppl = train(model, train_dataloader, optimizer, criterion, scheduler, device)
+    train_losses.append(train_loss)
+    train_perplexities.append(train_ppl)
+    
+    # Değerlendirme
+    val_loss, val_acc, val_ppl = evaluate(model, val_dataloader, criterion, device)
+    val_losses.append(val_loss)
+    val_perplexities.append(val_ppl)
+    
+    # Epoch süresini hesapla
+    end_time = time.time()
+    epoch_mins, epoch_secs = divmod(end_time - start_time, 60)
+    
+    # Sonuçları yazdır
+    print(f'Epoch: {epoch+1:02} | Time: {epoch_mins}m {epoch_secs:.0f}s')
+    print(f'\tTrain Loss: {train_loss:.3f} | Train Accuracy: {train_acc*100:.2f}% | Train PPL: {train_ppl:.2f}')
+    print(f'\tVal. Loss: {val_loss:.3f} | Val. Accuracy: {val_acc*100:.2f}% | Val. PPL: {val_ppl:.2f}')
+    
+    # En iyi modeli kaydet
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
         torch.save({
             'epoch': epoch+1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'train_losses': train_losses,
-            'tokens_seen': tokens_seen,
-            'global_step': global_step
-        }, checkpoint_path)
-        print(f"Checkpoint saved: {checkpoint_path}")
-        
-optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=0.0004, weight_decay=0.1
-)
-epochs = 4
-eval_freq = 20
-bert_train(optimizer, eval_freq, epochs=epochs)
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'train_perplexity': train_ppl,
+            'val_perplexity': val_ppl,
+            'config': bertconfig
+        }, os.path.join(MODEL_SAVE_PATH, 'best_model.pt'))
+        print(f"En iyi model kaydedildi (Epoch {epoch+1}, Val. Loss: {val_loss:.3f})")
+    
+    # Her epoch sonunda checkpoint kaydet
+    torch.save({
+        'epoch': epoch+1,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'train_loss': train_loss,
+        'val_loss': val_loss,
+        'train_perplexity': train_ppl,
+        'val_perplexity': val_ppl,
+        'config': bertconfig
+    }, os.path.join(MODEL_SAVE_PATH, f'checkpoint_epoch_{epoch+1}.pt'))
 
+# Eğitim sonuçlarını görselleştir
+plt.figure(figsize=(12, 5))
 
+plt.subplot(1, 2, 1)
+plt.plot(train_losses, label='Train Loss')
+plt.plot(val_losses, label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Training and Validation Loss')
 
-def plot_losses(epochs_seen, tokens_seen, train_losses, file_name=None):
-    fig, ax1 = plt.subplots(figsize=(5, 3))
-    ax1.plot(epochs_seen, train_losses, label="Training loss")
+plt.subplot(1, 2, 2)
+plt.plot(train_perplexities, label='Train Perplexity')
+plt.plot(val_perplexities, label='Validation Perplexity')
+plt.xlabel('Epochs')
+plt.ylabel('Perplexity')
+plt.legend()
+plt.title('Training and Validation Perplexity')
 
-    ax1.set_xlabel("Epochs")
-    ax1.set_ylabel("Loss")
-    ax1.legend(loc="upper right")
-    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
-    ax2 = ax1.twiny()
-    ax2.plot(tokens_seen, train_losses, alpha=0)
-    ax2.set_xlabel("Tokens seen")
-    fig.tight_layout()
+plt.tight_layout()
+plt.savefig(os.path.join(MODEL_SAVE_PATH, 'training_results.png'))
+plt.show()
 
+print(f"Eğitim tamamlandı! Checkpoint dosyaları '{MODEL_SAVE_PATH}' dizinine kaydedildi.")
 
-    plt.show()
+# Eğitim süresi bilgisi
+print(f"Toplam eğitim süresi: {datetime.timedelta(seconds=int(time.time() - start_time))}")
 
-
-epochs_tensor = torch.linspace(0, epochs - 1, len(train_losses))
-plot_losses(epochs_tensor, track_tokens_seen, train_losses, file_name="training_loss_plot.png")
+# Devam etmek veya tekrar eğitmek için bir fonksiyon
+def resume_training(checkpoint_path, train_dataloader, val_dataloader, epochs=5):
+    """
+    Eğitimi bir checkpoint'ten devam ettirmek için kullanılabilir
+    """
+    # Checkpoint'i yükle
+    checkpoint = torch.load(checkpoint_path)
+    
+    # Modeli oluştur ve ağırlıkları yükle
+    model = BERT(checkpoint['config']).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Optimizer'ı yeniden oluştur ve durumunu yükle
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Schedulerı yeniden oluştur ve durumunu yükle
+    total_steps = len(train_dataloader) * epochs
+    scheduler = get_lr_scheduler(optimizer, WARMUP_STEPS, total_steps)
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    print(f"Eğitim {checkpoint_path} dosyasından devam ediyor (Epoch {checkpoint['epoch']})")
+    
+    # Eğitimi başlat
+    for epoch in range(checkpoint['epoch'], checkpoint['epoch'] + epochs):
+        # (Eğitim kodunu burada tekrarla)
+        pass
