@@ -94,11 +94,31 @@ with open(data_path, "r", encoding="utf-8") as f:
     data = f.readlines()
 
 
-dataset = BertDataset(data)
+train_ratio = .9
+train_limit = len(data) * train_ratio
 
-print(f'len dataset : {len(dataset)}')
-dataloader = DataLoader(
-    dataset= dataset,
+train_data = data[:train_limit]
+val_data = data[train_limit:]
+
+print(f'len raw train_data :{len(train_data)}')
+print(f'len raw val_data :{len(val_data)}')
+
+train_dataset = BertDataset(train_data)
+val_dataset = BertDataset(val_data)
+
+print(f'len train dataset : {len(train_dataset)}')
+print(f'len valtrain dataset : {len(val_dataset)}')
+
+train_dataloader = DataLoader(
+    dataset= train_dataset,
+    batch_size= bertconfig['batch_size'],
+    shuffle=True,
+    drop_last=True,
+    num_workers=num_workers
+)
+
+val_dataloader = DataLoader(
+    dataset= val_dataset,
     batch_size= bertconfig['batch_size'],
     shuffle=True,
     drop_last=True,
