@@ -32,7 +32,7 @@ def calc_loss_loader(num_batches=None):
             loss = calc_loss_batch(
                 input_batch, target_batch
             )
-            total_loss = loss.item()
+            total_loss += loss.item()
 
         else:
             break
@@ -76,7 +76,7 @@ def bert_train(optimizer, eval_freq: int = 2, epochs: int = 10):
                 track_tokens_seen.append(tokens_seen)
 
                 print(f"Epoch [{epoch+1}/{epochs}], Step [{global_step}], Training Loss: {loss:.4f}")
-        checkpoint_path = os.path.join(checkpoint_dir, f"bert_epoch_{epoch+1}.pt")
+
         torch.save({
             'epoch': epoch+1,
             'model_state_dict': model.state_dict(),
