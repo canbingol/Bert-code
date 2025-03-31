@@ -95,7 +95,7 @@ with open(data_path, "r", encoding="utf-8") as f:
 
 
 train_ratio = .9
-train_limit = len(data) * train_ratio
+train_limit = int(len(data) * train_ratio
 
 train_data = data[:train_limit]
 val_data = data[train_limit:]
