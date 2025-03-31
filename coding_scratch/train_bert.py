@@ -234,7 +234,6 @@ plt.show()
 
 print(f"Eğitim tamamlandı! Checkpoint dosyaları '{MODEL_SAVE_PATH}' dizinine kaydedildi.")
 
-# Eğitim süresi bilgisi
 print(f"Toplam eğitim süresi: {datetime.timedelta(seconds=int(time.time() - start_time))}")
 
 # Devam etmek veya tekrar eğitmek için bir fonksiyon
@@ -260,7 +259,5 @@ def resume_training(checkpoint_path, train_dataloader, val_dataloader, epochs=5)
     
     print(f"Eğitim {checkpoint_path} dosyasından devam ediyor (Epoch {checkpoint['epoch']})")
     
-    # Eğitimi başlat
     for epoch in range(checkpoint['epoch'], checkpoint['epoch'] + epochs):
-        # (Eğitim kodunu burada tekrarla)
         pass
