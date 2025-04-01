@@ -61,9 +61,7 @@ For detailed documentation on the BERT from scratch implementation, see:
 - PyTorch
 - Transformers (for Hugging Face models)
 - NumPy
-- Pandas
 - Matplotlib
-- scikit-learn
 
 ## Usage
 
