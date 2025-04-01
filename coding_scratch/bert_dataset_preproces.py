@@ -84,7 +84,7 @@ class BertDataset(Dataset):
         return torch.tensor(self.inputs[index]), torch.tensor(self.targets[index])
 
 
-
+# These codes were written to provide training on Kaggle.
 if os.path.exists("/kaggle/input/tr-news/data.txt"):
     data_path = "/kaggle/input/tr-news/data.txt"
 else:
