@@ -24,7 +24,7 @@ model = model.to(device)
 total_params = sum(p.numel() for p in model.parameters())
 print(f"Total model params: {total_params:,}")
 
-criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore pad_idx
+criterion = nn.CrossEntropyLoss(ignore_index=0, reduction='none') # ignore pad_idx
 optimizer = optim.AdamW(model.parameters(), lr=LR, eps=2e-5, weight_decay=WEIGHT_DECAY)
 
 
@@ -46,7 +46,10 @@ def train_model():
         output = output.view(-1, output.size(-1))
         target_batch = target_batch.view(-1)
 
+        # calculate loss for  masked token only
+        mask_batch = (train_batch == mask_idx).float().view(-1)
         loss = criterion(output, target_batch)
+        loss = (loss * mask_batch).sum() / mask_batch.sum()
 
         # backwrad pass
         optimizer.zero_grad()
@@ -85,7 +88,10 @@ def evaulate_model():
             output = output.view(-1, output.size(-1))
             target_batch = target_batch.view(-1)
 
+            # calculate loss for  masked token only
+            mask_batch = (train_batch == mask_idx).float().view(-1)
             loss = criterion(output, target_batch)
+            loss = (loss * mask_batch).sum() / mask_batch.sum()
 
             epoch_loss += loss.item()
 
