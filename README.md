@@ -55,7 +55,18 @@ The `coding_scratch` directory contains the full codebase for the BERT from scra
 
 For detailed documentation on the BERT from scratch implementation, see:
 [coding_scratch README](https://github.com/canbingol/Bert-from-scratch/blob/main/README.md)
+Then, run the training script:
+```
+python train_bert.py
+```
+##  How to Use
 
+Clone the repository and navigate to the working directory:
+
+```bash
+git clone https://github.com/canbingol/Bert-code.git
+cd Bert-code/coding_scratch
+```
 ## Requirements
 
 - PyTorch
